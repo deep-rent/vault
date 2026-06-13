@@ -100,7 +100,9 @@ type Client interface {
 	// Public indicates if the client is capable of keeping a secret (e.g.,
 	// false for SPAs, true for confidential services).
 	Public() bool
-	// Audience returns the audience for the client.
+	// Audience returns the audience for the client. This value will be included
+	// in the "aud" claim of access tokens issued to this client. If an empty
+	// slice or nil is returned, the claim will be omitted during issuance.
 	Audience() []string
 	// VerifySecret checks if the provided secret matches the client's registered
 	// secret.

@@ -14,7 +14,7 @@ var ErrKeyNotFound = errors.New("key not found in vault")
 // signing keys ([jwk.KeyPair]). It abstracts away the underlying implementation
 // details of external sources like KMS, HSM, or HashiCorp Vault.
 type Vault interface {
-	jwk.Resolver
+	Keys() jwk.Set
 
 	// Next retrieves the currently active [jwk.KeyPair] intended for signing
 	// new tokens. It returns [ErrKeyNotFound] if the vault is empty.
@@ -37,5 +37,5 @@ type Store interface {
 
 	// Add imports an existing key pair from PEM format, encrypts it using the provided KEK,
 	// and stores it in the backend.
-	Add(ctx context.Context, kek []byte, pemData []byte) (jwk.KeyPair, error)
+	Add(ctx context.Context, kek []byte, hint jwk.Hint, pem []byte) (jwk.KeyPair, error)
 }

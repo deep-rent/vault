@@ -26,9 +26,11 @@ import (
 	"time"
 
 	"github.com/deep-rent/nexus/auth"
+	"github.com/deep-rent/nexus/jose/jwk"
 	"github.com/deep-rent/nexus/jose/jwt"
 	"github.com/deep-rent/nexus/pkce"
 	"github.com/deep-rent/nexus/router"
+	"github.com/deep-rent/nexus/uuid"
 	"github.com/deep-rent/vault"
 )
 
@@ -204,7 +206,6 @@ func WithGrant(grant Grant) Option {
 type Provider struct {
 	vault                  vault.Vault
 	issuer                 string
-	maxAge                 time.Duration
 	clock                  func() time.Time
 	clients                ClientStore
 	sessions               SessionStore
@@ -384,30 +385,28 @@ func NewProvider(cfg Config, opts ...Option) *Provider {
 
 	p.jwksCacheControlHeader = fmt.Sprintf("public, max-age=%d", jwksMaxAge)
 
-	if p.issuer != "" {
-		types := make([]string, 0, len(p.grants))
-		for grant := range p.grants {
-			types = append(types, string(grant))
-		}
-		sort.Strings(types)
+	types := make([]string, 0, len(p.grants))
+	for grant := range p.grants {
+		types = append(types, string(grant))
+	}
+	sort.Strings(types)
 
-		p.metadata = AuthorizationServerMetadata{
-			Issuer:                 p.issuer,
-			AuthorizationEndpoint:  p.issuer + PathAuthorize,
-			TokenEndpoint:          p.issuer + PathToken,
-			KeySetURI:              p.issuer + PathKeySet,
-			RevocationEndpoint:     p.issuer + PathRevoke,
-			IntrospectionEndpoint:  p.issuer + PathIntrospect,
-			GrantTypesSupported:    types,
-			ResponseTypesSupported: []string{"code"},
-			TokenEndpointAuthMethodsSupported: []string{
-				"client_secret_basic", "client_secret_post", "none",
-			},
-		}
+	p.metadata = AuthorizationServerMetadata{
+		Issuer:                 p.issuer,
+		AuthorizationEndpoint:  p.issuer + PathAuthorize,
+		TokenEndpoint:          p.issuer + PathToken,
+		KeySetURI:              p.issuer + PathKeySet,
+		RevocationEndpoint:     p.issuer + PathRevoke,
+		IntrospectionEndpoint:  p.issuer + PathIntrospect,
+		GrantTypesSupported:    types,
+		ResponseTypesSupported: []string{"code"},
+		TokenEndpointAuthMethodsSupported: []string{
+			"client_secret_basic", "client_secret_post", "none",
+		},
+	}
 
-		if p.Supports(GrantTypeDeviceCode) {
-			p.metadata.DeviceAuthorizationEndpoint = p.issuer + PathDeviceAuthorization
-		}
+	if p.Supports(GrantTypeDeviceCode) {
+		p.metadata.DeviceAuthorizationEndpoint = p.issuer + PathDeviceAuthorization
 	}
 
 	return p
@@ -471,33 +470,33 @@ func (p *Provider) WellKnown(e *router.Exchange) error {
 //
 // Note: This endpoint is only enabled if a valid URL issuer was specified by
 // the configured JWT signer.
-// func (p *Provider) JWKS(e *router.Exchange) error {
-// 	raw, err := jwk.WriteSet(p.signer.KeySet())
-// 	if err != nil {
-// 		id := router.ErrorID()
+func (p *Provider) JWKS(e *router.Exchange) error {
+	raw, err := jwk.WriteSet(p.vault.Keys())
+	if err != nil {
+		id := router.ErrorID()
 
-// 		p.logger.ErrorContext(
-// 			e.Context(),
-// 			"Failed to serialize JWKS",
-// 			slog.String("error_id", id),
-// 			slog.Any("error", err),
-// 		)
+		p.logger.ErrorContext(
+			e.Context(),
+			"Failed to serialize JWKS",
+			slog.String("error_id", id),
+			slog.Any("error", err),
+		)
 
-// 		return &Error{
-// 			Status:      http.StatusInternalServerError,
-// 			Code:        ErrorCodeServerError,
-// 			Description: "failed to generate jwks",
-// 			ID:          id,
-// 		}
-// 	}
+		return &Error{
+			Status:      http.StatusInternalServerError,
+			Code:        ErrorCodeServerError,
+			Description: "failed to generate jwks",
+			ID:          id,
+		}
+	}
 
-// 	e.SetHeader("Content-Type", jwk.MediaTypeSet)
-// 	e.SetHeader("Cache-Control", p.jwksCacheControlHeader)
-// 	e.Status(http.StatusOK)
-// 	_, err = e.W.Write(raw)
+	e.SetHeader("Content-Type", jwk.MediaTypeSet)
+	e.SetHeader("Cache-Control", p.jwksCacheControlHeader)
+	e.Status(http.StatusOK)
+	_, err = e.W.Write(raw)
 
-// 	return err
-// }
+	return err
+}
 
 // Authorize handles requests to the authorization endpoint (RFC 6749
 // Section 3.1).
@@ -777,9 +776,19 @@ func (p *Provider) token(e *router.Exchange) error {
 
 	clientID := pro.Client.ID()
 
+	now := p.clock()
+
 	claims := &auth.Claims{
-		Scope: strings.Fields(iss.Scope),
 		Azp:   clientID,
+		Scope: strings.Fields(iss.Scope),
+		Reserved: jwt.Reserved{
+			Jti: uuid.New().String(),
+			Iss: p.issuer,
+			Aud: pro.Client.Audience(),
+			Iat: now,
+			Nbf: now,
+			Exp: now.Add(p.accessTokenLifetime),
+		},
 	}
 
 	// Populate claims based on the context of the grant.
@@ -1612,10 +1621,8 @@ func (p *Provider) introspect(e *router.Exchange) error {
 	var res IntrospectionResponse
 
 	v := jwt.NewVerifier[*auth.Claims](
-		p.vault,
+		p.vault.Keys(),
 		jwt.WithIssuers(p.issuer),
-		jwt.WithAudiences(pro.Client.Audience()...),
-		jwt.WithMaxAge(p.maxAge),
 		jwt.WithClock(p.clock),
 	)
 
