@@ -51,7 +51,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/deep-rent/nexus/oauth"
+	"github.com/deep-rent/vault/oauth"
 )
 
 const (
