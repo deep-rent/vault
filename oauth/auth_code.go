@@ -20,7 +20,7 @@ import (
 	"net/http"
 
 	"github.com/deep-rent/nexus/router"
-	"github.com/deep-rent/vault/internal/pkce"
+	"github.com/deep-rent/vault/pkce"
 )
 
 // authCodeGrant implements the [Grant] interface for the Authorization Code

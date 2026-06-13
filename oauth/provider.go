@@ -29,7 +29,7 @@ import (
 	"github.com/deep-rent/nexus/jose/jwk"
 	"github.com/deep-rent/nexus/jose/jwt"
 	"github.com/deep-rent/nexus/router"
-	"github.com/deep-rent/vault/internal/pkce"
+	"github.com/deep-rent/vault/pkce"
 )
 
 const (
