@@ -26,10 +26,10 @@ import (
 	"time"
 
 	"github.com/deep-rent/nexus/auth"
-	"github.com/deep-rent/nexus/jose/jwk"
 	"github.com/deep-rent/nexus/jose/jwt"
 	"github.com/deep-rent/nexus/pkce"
 	"github.com/deep-rent/nexus/router"
+	"github.com/deep-rent/vault"
 )
 
 const (
@@ -61,15 +61,8 @@ const (
 
 // Config holds the configuration options for an OAuth 2.0 Provider.
 type Config struct {
-	// Signer is the JWT signer used to issue access tokens.
-	//
-	// This option is mandatory.
-	Signer jwt.Signer
-	// Verifier is the JWT verifier used to validate access tokens during
-	// introspection requests.
-	//
-	// Optional, if omitted, token introspection will be deactivated.
-	Verifier jwt.Verifier[*auth.Claims]
+	Issuer string
+	Vault  vault.Vault
 	// Clients provides access to registered client applications.
 	//
 	// This option is mandatory.
@@ -95,6 +88,13 @@ type Config struct {
 	//
 	// Optional, defaults to [DefaultStateCookieName].
 	StateCookieName string
+
+	MaxAge time.Duration
+
+	Clock func() time.Time
+
+	AccessTokenLifetime time.Duration
+
 	// RefreshTokenLifetime defines how long issued refresh tokens remain valid.
 	// Only used when [GrantTypeRefreshToken] is enabled.
 	//
@@ -202,8 +202,10 @@ func WithGrant(grant Grant) Option {
 // Provider is the central component that manages OAuth 2.0 flows, token
 // issuance, and validation.
 type Provider struct {
-	signer                 jwt.Signer
-	verifier               jwt.Verifier[*auth.Claims]
+	vault                  vault.Vault
+	issuer                 string
+	maxAge                 time.Duration
+	clock                  func() time.Time
 	clients                ClientStore
 	sessions               SessionStore
 	subjects               SubjectStore
@@ -212,12 +214,12 @@ type Provider struct {
 	logger                 *slog.Logger
 	sessionCookieName      string
 	stateCookieName        string
+	accessTokenLifetime    time.Duration
 	refreshTokenLifetime   time.Duration
 	authCodeLifetime       time.Duration
 	deviceCodeLifetime     time.Duration
 	realm                  string
 	verificationURI        string
-	issuer                 string
 	loginTerminalURI       *url.URL
 	loginRedirectURI       string
 	generateSessionKey     TokenGeneratorFn
@@ -236,9 +238,6 @@ type Provider struct {
 //
 // It panics if any mandatory options are missing.
 func NewProvider(cfg Config, opts ...Option) *Provider {
-	if cfg.Signer == nil {
-		panic("oauth: signer is required")
-	}
 	if cfg.Clients == nil {
 		panic("oauth: client store is required")
 	}
@@ -250,7 +249,7 @@ func NewProvider(cfg Config, opts ...Option) *Provider {
 	}
 
 	issuer := ""
-	if iss := strings.TrimRight(cfg.Signer.Issuer(), "/"); iss != "" {
+	if iss := strings.TrimRight(cfg.Issuer, "/"); iss != "" {
 		if u, err := url.Parse(iss); err == nil {
 			if u.Scheme != "" && u.Host != "" {
 				issuer = iss
@@ -259,8 +258,6 @@ func NewProvider(cfg Config, opts ...Option) *Provider {
 	}
 
 	p := &Provider{
-		signer:            cfg.Signer,
-		verifier:          cfg.Verifier,
 		clients:           cfg.Clients,
 		sessions:          cfg.Sessions,
 		subjects:          cfg.Subjects,
@@ -427,17 +424,15 @@ func (p *Provider) Supports(grant GrantType) bool {
 // Note: All desired grant types must be registered via [Provider.Register]
 // before calling this method.
 func (p *Provider) Mount(r *router.Router) {
+	r.HandleFunc("GET "+PathWellKnown, p.WellKnown)
 	r.HandleFunc("GET "+PathAuthorize, p.Authorize)
 	r.HandleFunc("POST "+PathAuthorize, p.Authorize)
 	r.HandleFunc("POST "+PathToken, p.Token)
 	r.HandleFunc("POST "+PathRevoke, p.Revoke)
+	r.HandleFunc("POST "+PathIntrospect, p.Introspect)
 
 	if p.Supports(GrantTypeDeviceCode) {
 		r.HandleFunc("POST "+PathDeviceAuthorization, p.DeviceAuthorization)
-	}
-
-	if p.verifier != nil {
-		r.HandleFunc("POST "+PathIntrospect, p.Introspect)
 	}
 
 	r.HandleFunc("POST "+PathLogin, p.Login)
@@ -446,11 +441,6 @@ func (p *Provider) Mount(r *router.Router) {
 	if len(p.identityProviders) != 0 {
 		r.HandleFunc("GET "+PathExternalLogin, p.ExternalLogin)
 		r.HandleFunc("GET "+PathExternalCallback, p.ExternalCallback)
-	}
-
-	if p.issuer != "" {
-		r.HandleFunc("GET "+PathWellKnown, p.WellKnown)
-		r.HandleFunc("GET "+PathKeySet, p.JWKS)
 	}
 }
 
@@ -481,33 +471,33 @@ func (p *Provider) WellKnown(e *router.Exchange) error {
 //
 // Note: This endpoint is only enabled if a valid URL issuer was specified by
 // the configured JWT signer.
-func (p *Provider) JWKS(e *router.Exchange) error {
-	raw, err := jwk.WriteSet(p.signer.KeySet())
-	if err != nil {
-		id := router.ErrorID()
+// func (p *Provider) JWKS(e *router.Exchange) error {
+// 	raw, err := jwk.WriteSet(p.signer.KeySet())
+// 	if err != nil {
+// 		id := router.ErrorID()
 
-		p.logger.ErrorContext(
-			e.Context(),
-			"Failed to serialize JWKS",
-			slog.String("error_id", id),
-			slog.Any("error", err),
-		)
+// 		p.logger.ErrorContext(
+// 			e.Context(),
+// 			"Failed to serialize JWKS",
+// 			slog.String("error_id", id),
+// 			slog.Any("error", err),
+// 		)
 
-		return &Error{
-			Status:      http.StatusInternalServerError,
-			Code:        ErrorCodeServerError,
-			Description: "failed to generate jwks",
-			ID:          id,
-		}
-	}
+// 		return &Error{
+// 			Status:      http.StatusInternalServerError,
+// 			Code:        ErrorCodeServerError,
+// 			Description: "failed to generate jwks",
+// 			ID:          id,
+// 		}
+// 	}
 
-	e.SetHeader("Content-Type", jwk.MediaTypeSet)
-	e.SetHeader("Cache-Control", p.jwksCacheControlHeader)
-	e.Status(http.StatusOK)
-	_, err = e.W.Write(raw)
+// 	e.SetHeader("Content-Type", jwk.MediaTypeSet)
+// 	e.SetHeader("Cache-Control", p.jwksCacheControlHeader)
+// 	e.Status(http.StatusOK)
+// 	_, err = e.W.Write(raw)
 
-	return err
-}
+// 	return err
+// }
 
 // Authorize handles requests to the authorization endpoint (RFC 6749
 // Section 3.1).
@@ -831,7 +821,23 @@ func (p *Provider) token(e *router.Exchange) error {
 		}
 	}
 
-	token, err := p.signer.Sign(claims)
+	key, err := p.vault.Next()
+	if err != nil {
+		p.logger.ErrorContext(
+			e.Context(),
+			"Could not obtain signing key",
+		)
+
+		// TODO: Add id
+
+		return &Error{
+			Status:      http.StatusInternalServerError,
+			Code:        ErrorCodeServerError,
+			Description: "unable to obtain signing key",
+		}
+	}
+
+	token, err := jwt.Sign(key, claims)
 	if err != nil {
 		id := router.ErrorID()
 
@@ -850,7 +856,7 @@ func (p *Provider) token(e *router.Exchange) error {
 		}
 	}
 
-	expiresIn := uint64(p.signer.Lifetime().Seconds())
+	expiresIn := uint64(p.accessTokenLifetime.Seconds())
 
 	res := TokenResponse{
 		AccessToken: string(token),
@@ -1584,12 +1590,6 @@ func (p *Provider) externalCallback(e *router.Exchange) error {
 // request and uses the configured [jwt.Verifier] to check the provided token's
 // validity.
 func (p *Provider) Introspect(e *router.Exchange) error {
-	// Exit if token verification is not supported.
-	if p.verifier == nil {
-		e.Status(http.StatusNotFound)
-		return nil
-	}
-
 	return wrap(e, p.introspect)
 }
 
@@ -1611,7 +1611,15 @@ func (p *Provider) introspect(e *router.Exchange) error {
 
 	var res IntrospectionResponse
 
-	if claims, err := p.verifier.Verify([]byte(token)); err != nil {
+	v := jwt.NewVerifier[*auth.Claims](
+		p.vault,
+		jwt.WithIssuers(p.issuer),
+		jwt.WithAudiences(pro.Client.Audience()...),
+		jwt.WithMaxAge(p.maxAge),
+		jwt.WithClock(p.clock),
+	)
+
+	if claims, err := v.Verify([]byte(token)); err != nil {
 		p.logger.DebugContext(
 			e.Context(),
 			"Token verification failed during introspection",

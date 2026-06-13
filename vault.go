@@ -3,7 +3,6 @@ package vault
 import (
 	"context"
 	"errors"
-	"iter"
 
 	"github.com/deep-rent/nexus/jose/jwk"
 )
@@ -15,17 +14,11 @@ var ErrKeyNotFound = errors.New("key not found in vault")
 // signing keys ([jwk.KeyPair]). It abstracts away the underlying implementation
 // details of external sources like KMS, HSM, or HashiCorp Vault.
 type Vault interface {
-	// Keys returns an iterator over all valid [jwk.KeyPair]s managed by this vault.
-	// This is useful for exposing public keys via a JSON Web Key Set (JWKS) endpoint.
-	Keys(ctx context.Context) (iter.Seq[jwk.KeyPair], error)
-
-	// Find retrieves a specific [jwk.KeyPair] matching the specified hint (e.g., Key ID).
-	// It returns [ErrKeyNotFound] if no matching key is found.
-	Find(ctx context.Context, hint jwk.Hint) (jwk.KeyPair, error)
+	jwk.Resolver
 
 	// Next retrieves the currently active [jwk.KeyPair] intended for signing
 	// new tokens. It returns [ErrKeyNotFound] if the vault is empty.
-	Next(ctx context.Context) (jwk.KeyPair, error)
+	Next() (jwk.KeyPair, error)
 }
 
 // Store represents an external backend capable of securely supplying and managing signing keys.

@@ -100,6 +100,8 @@ type Client interface {
 	// Public indicates if the client is capable of keeping a secret (e.g.,
 	// false for SPAs, true for confidential services).
 	Public() bool
+	// Audience returns the audience for the client.
+	Audience() []string
 	// VerifySecret checks if the provided secret matches the client's registered
 	// secret.
 	VerifySecret(secret string) bool
