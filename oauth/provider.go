@@ -501,7 +501,7 @@ func (p *Provider) JWKS(e *router.Exchange) error {
 		}
 	}
 
-	e.SetHeader("Content-Type", "application/jwk-set+json")
+	e.SetHeader("Content-Type", jwk.MediaTypeSet)
 	e.SetHeader("Cache-Control", p.jwksCacheControlHeader)
 	e.Status(http.StatusOK)
 	_, err = e.W.Write(raw)
