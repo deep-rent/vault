@@ -1,0 +1,14 @@
+*          text=auto
+*.bat      text eol=crlf
+*.go       text
+*.json     text
+*.md       text diff=markdown
+*.sh       text eol=lf
+*.sql      text linguist-vendored
+*.svg      text
+*.yaml     text
+*.yml      text
+go.mod     text
+go.sum     text
+LICENSE    text
+Makefile   text linguist-vendored
